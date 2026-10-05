@@ -1,0 +1,6 @@
+/.juggler/
+
+# Large conformance fixtures fetched from the Hugging Face repo (see README).
+/testdata/model/model.bin
+/testdata/model/meta.json
+/testdata/conformance/
