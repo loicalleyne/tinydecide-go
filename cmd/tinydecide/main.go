@@ -67,6 +67,43 @@ func main() {
 	}
 }
 
+// usage prints the help shown by -h/--help and on a flag error.
+func usage() {
+	out := flag.CommandLine.Output()
+	fmt.Fprint(out, `tinydecide - answer questions about one message with the TinyDecide model
+
+Usage:
+  tinydecide [flags] --choice "text=a,b" --noul "text" ...   # message on stdin
+  tinydecide --state "message" [flags] [questions]           # message as a flag
+  echo '{"state":"...","questions":[...]}' | tinydecide      # JSON request
+  tinydecide --mcp                                           # MCP server (stdio)
+
+The message (the "state") is piped on stdin or passed with --state. Questions
+are added with the repeatable --choice/--noul/--score/--span flags, or as a JSON
+request piped on stdin. The result is printed as one JSON object.
+
+Question flags (repeatable):
+  --choice "text=opt1,opt2,..."   pick one of 2-32 options
+  --score  "text=low,...,high"    place the message on ordered levels
+  --noul   "text"                 yes/no; returns P(statement is true)
+  --span   "text"                 extract a substring of the message
+
+Flags:
+`)
+	flag.PrintDefaults()
+	fmt.Fprint(out, `
+Model resolution (first that exists):
+  --model, then $TINYDECIDE_MODEL, then ~/.tinydecide, then an embedded model
+  (built with -tags embedfull/embed), then the current directory.
+
+Examples:
+  echo "Book a table on Friday at 7:30" | tinydecide \
+    --choice "Which app?=calendar,restaurants" --span "Extract the time."
+
+  tinydecide --state "The server is on fire" --noul "Is this urgent?"
+`)
+}
+
 func run() error {
 	var (
 		model     = flag.String("model", "", "directory holding meta.json and model.bin (default: $TINYDECIDE_MODEL, ~/.tinydecide, embedded model, or .)")
@@ -85,6 +122,7 @@ func run() error {
 	flag.Var(&nouls, "noul", "noul (yes/no) question, \"text\" (repeatable)")
 	flag.Var(&scores, "score", "score question, \"text=low,...,high\" (repeatable)")
 	flag.Var(&spans, "span", "span extraction question, \"text\" (repeatable)")
+	flag.Usage = usage
 	flag.Parse()
 
 	if *mcpFlag {
