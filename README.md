@@ -88,6 +88,57 @@ the centre is the mean of the examples, so a single example has no effect. If yo
 track the mean `Qvec` of every message asked with a question, pass it as the
 `center`. `examples/corrections` runs the snippet above.
 
+## Embed the model
+
+Build tags bake a model into the binary so it ships without separate files.
+The model files are committed to this repo under `assets/`, so embedding needs
+no download. Two builds are available:
+
+| tag         | build      | vocab        | size   |
+|-------------|------------|--------------|--------|
+| `embed`     | the 10.4M  | 16,000-token | 6.2 MB |
+| `embedfull` | the 13.8M  | 30,534-token | 10 MB  |
+
+Both are the same 4-bit format.
+
+```sh
+go build -tags embed ./...       # 10.4M build
+go build -tags embedfull ./...   # 13.8M build
+```
+
+Because the `assets/` files ship in the module, a build tag works the same way
+whether you build this repo from a checkout or pass it while building a program
+that imports the module — `go build` applies tags to dependency packages too:
+
+```sh
+go build -tags embed ./...   # in your own program; embeds the 10.4M model
+```
+
+With an embed tag set, `Load(dir)` still prefers a directory that contains both
+`meta.json` and `model.bin`, and falls back to the embedded model otherwise —
+so pass an empty or non-existent path (e.g. `Load("")`) to use the baked-in one.
+If both `embed` and `embedfull` are set, `embedfull` wins.
+
+If you would rather control embedding entirely in your own code — for example to
+embed your own model files or avoid the build tag — embed the bytes yourself and
+pass them to `FromBytes`:
+
+```go
+import (
+	_ "embed"
+
+	tinydecide "github.com/loicalleyne/tinydecide-go"
+)
+
+//go:embed assets/meta.json
+var metaJSON []byte
+
+//go:embed assets/model.bin
+var modelBin []byte
+
+// model, err := tinydecide.FromBytes(metaJSON, modelBin)
+```
+
 ## Test
 
 The conformance test reads a model and fixtures from `testdata/`. They are not

@@ -464,14 +464,25 @@ func takeLin(w *weights, n string, rows *int, cols int, bias string) (lin, *Erro
 }
 
 // Load reads meta.json and model.bin from a directory.
+//
+// When the binary is built with the "embed" build tag, an embedded model is
+// baked in at compile time. In that case the files in dir take precedence when
+// both meta.json and model.bin are present there; otherwise the embedded model
+// is used. Without the "embed" tag, dir is always required.
 func Load(dir string) (*TinyDecide, error) {
-	metaBytes, err := os.ReadFile(filepath.Join(dir, "meta.json"))
-	if err != nil {
-		return nil, ioErr(err)
-	}
-	bin, err := os.ReadFile(filepath.Join(dir, "model.bin"))
-	if err != nil {
-		return nil, ioErr(err)
+	embMeta, embBin, haveEmbed := embeddedModel()
+
+	metaBytes, metaErr := os.ReadFile(filepath.Join(dir, "meta.json"))
+	bin, binErr := os.ReadFile(filepath.Join(dir, "model.bin"))
+
+	if metaErr != nil || binErr != nil {
+		if haveEmbed {
+			return FromBytes(embMeta, embBin)
+		}
+		if metaErr != nil {
+			return nil, ioErr(metaErr)
+		}
+		return nil, ioErr(binErr)
 	}
 	return FromBytes(metaBytes, bin)
 }
