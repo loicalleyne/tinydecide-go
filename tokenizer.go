@@ -74,6 +74,10 @@ func newWordPiece(vocab []*string, unk, prefix string, maxChars int) (*WordPiece
 // Unk returns the id of the unknown token.
 func (w *WordPiece) Unk() uint32 { return w.unk }
 
+// Count returns the number of tokens text encodes to, before any
+// request-level truncation.
+func (w *WordPiece) Count(text string) int { return len(w.Encode(text).ids) }
+
 type chRune struct {
 	ch   rune
 	a, b int

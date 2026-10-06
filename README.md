@@ -65,6 +65,213 @@ is `.`, the Hugging Face repo layout.
   `ErrRequest`, with the same message as the JavaScript engine.
 - Unset numeric fields are `NaN`; unset `Pick` is `-1`; unset `Tok`/`Char` are `nil`.
 
+## CLI
+
+`cmd/tinydecide` is a command-line front end: it takes one message and any
+number of questions, answers them in a single pass, and prints the result as
+JSON. Unset `NaN` fields are rendered as `null` so the output is valid JSON.
+
+```
+# default: self-contained, full model baked in (13.8M, 30,534-token vocab),
+# runs from $PATH with no arguments
+make install
+
+# smaller embedded model (10.4M, 16k-token vocab)
+make install-embed
+
+# no embedded model: needs a model dir at run time (see "Finding the model").
+# Note the /cmd/tinydecide suffix — the module root is the library, not a binary.
+make install-nomodel
+go install github.com/loicalleyne/tinydecide-go/cmd/tinydecide@latest
+
+# or run from a checkout without installing
+go run ./cmd/tinydecide --model path/to/TinyDecide [flags]
+```
+
+> **Which command embeds a model?** Only the `make` targets do, because
+> embedding is a build tag (`-tags embedfull` / `-tags embed`) and `go install`
+> accepts no build tags. So `make install` gives you a self-contained binary
+> with the full model, while `go install …/cmd/tinydecide@latest` embeds
+> **nothing** and must find a model at run time.
+
+### Using the full model with `go install`
+
+A binary from `go install github.com/loicalleyne/tinydecide-go/cmd/tinydecide@latest`
+has no model baked in, so give it the full weights at run time with any of:
+
+```bash
+# A) drop the full weights where the binary looks by default
+mkdir -p ~/.tinydecide
+cp assets/full/meta.json assets/full/model.bin ~/.tinydecide/
+
+# B) point at them with an environment variable
+export TINYDECIDE_MODEL=/path/to/assets/full
+
+# C) pass them per-invocation
+tinydecide --model /path/to/assets/full --noul "Is this urgent?"
+```
+
+`assets/full/` in this repo holds the full 30,534-token model; `assets/` holds
+the smaller 16k-token one. The Hugging Face repo ships the same `meta.json` and
+`model.bin` layout. To instead embed the full model in the binary, use
+`make install` (or `go install -tags embedfull …/cmd/tinydecide` from a
+checkout).
+
+### Finding the model
+
+So a binary on `$PATH` runs without pointing it at a model every time, the
+model directory is resolved in this order:
+
+1. the `--model` flag;
+2. the `$TINYDECIDE_MODEL` environment variable;
+3. `~/.tinydecide` (when it holds both `meta.json` and `model.bin`);
+4. a model **embedded at build time** — `make install` bakes in the full model
+   (13.8M, 30,534-token vocab) and `make install-embed` the smaller one (10.4M,
+   16k-token vocab); either way the binary needs no model files at all;
+5. the current directory.
+
+For an installed CLI the easiest setup is `make install` (full model embedded);
+alternatively drop the Hugging Face `meta.json` and `model.bin` into
+`~/.tinydecide`.
+
+### Questions and input
+
+The message (the *state*) is piped on stdin or passed with `--state`; questions
+are added with the repeatable `--choice`, `--noul`, `--score` and `--span`
+flags. `--choice` and `--score` take options as `"text=opt1,opt2,..."`.
+
+**Piped input** — pipe the message, add questions as flags:
+
+```
+echo "Book a table for 4 at an Italian place near the station on Friday at 7:30" \
+  | tinydecide --model path/to/TinyDecide --indent \
+      --choice "Which app should handle this?=reminders,music,calendar,restaurants,weather" \
+      --noul  "The message is urgent." \
+      --score "How positive is the tone?=negative,neutral,positive" \
+      --span  "Extract the time."
+```
+
+**CLI argument input** — give the message with `--state` instead of a pipe:
+
+```
+tinydecide --model path/to/TinyDecide \
+  --state "The server is on fire, help now!" \
+  --noul "Is this urgent?" \
+  --choice "Severity?=low,high"
+```
+
+A full request can also be piped as a single JSON object; stdin starting with
+`{` is read as `{"state": "...", "questions": [{"type": "noul", "text": "..."}]}`.
+Flags still merge in, and `--state` overrides the JSON's state.
+
+| flag | meaning |
+|------|---------|
+| `--model` | model directory; defaults to `$TINYDECIDE_MODEL`, `~/.tinydecide`, an embedded model, then `.` |
+| `--state` | the message (overrides piped text) |
+| `--max-tokens` | max state tokens allowed (default: the model's `ts_max`) |
+| `--strict` | exit non-zero when the state exceeds the limit instead of truncating |
+| `--indent` | pretty-print the JSON |
+| `--vectors` | include the internal `qvec`/`z0`/`ids` vectors (hidden by default) |
+| `--mcp` | run as an MCP server over stdio (see below) |
+
+The state is tokenised before answering. By default it is measured against the
+model's `ts_max`; `--max-tokens` sets a different cap. When the state is over
+the limit, `--strict` makes the command exit non-zero, otherwise it warns on
+stderr and lets the model truncate the message (`"truncated": true` in the
+output).
+
+### Output
+
+The command prints one JSON object. `answers` has one entry per question, in
+the order the questions were given, plus token counts and timing:
+
+```json
+{
+  "answers": [
+    { "kind": "choice", "pick": 3, "confidence": 0.94,
+      "probs": [0.003, 0.001, 0.012, 0.983, 0.002] },
+    { "kind": "noul", "p": 0.219 },
+    { "kind": "score", "pick": 1, "score": 0.517,
+      "probs": [0.013, 0.928, 0.059] },
+    { "kind": "span", "text": "7:30", "char": [69, 73], "tok": [15, 17],
+      "p_present": 0.9999, "p_span": 0.9977 }
+  ],
+  "tokens": { "state": 19, "questions": 42, "total": 61 },
+  "truncated": false,
+  "ms": 12.3
+}
+```
+
+Every answer carries all the fields; those that do not apply to its `kind` are
+`null` (`pick` is `-1`). The fields that matter per type:
+
+| `kind` | read these |
+|--------|------------|
+| `choice` | `pick` (index of the chosen option), `probs` (one per option), `confidence` |
+| `score` | the same, plus `score` (0 = first level, 1 = last level) |
+| `noul` | `p` — the probability the statement is true |
+| `span` | `text` (the extracted substring), `char` (UTF-8 byte offsets into the state), `tok`, `p_present`, `p_span` |
+
+`--vectors` adds the internal `qvec`/`z0`/`ids` arrays, off by default because
+they are large and only useful for the corrections workflow.
+
+### Choosing a model
+
+Two models ship in the repo; they differ only in vocabulary size and binary
+size, not in the question types or the token limits (both read the first 127
+tokens of the message and cap a question at 192 tokens):
+
+| build | directory | vocab | binary |
+|-------|-----------|-------|--------|
+| `make install`, `-tags embedfull` | `assets/full/` | 30,534 tokens | 13.8M |
+| `make install-embed`, `-tags embed` | `assets/` | 16,000 tokens | 10.4M |
+
+The full model handles rarer words with fewer `[UNK]` tokens; the smaller one
+makes a lighter binary. When a word is out of vocabulary both still work — it
+just becomes an unknown token.
+
+### MCP server
+
+With `--mcp` the binary runs as a [Model Context
+Protocol](https://modelcontextprotocol.io) server over stdio instead of
+answering once, so an MCP client (an editor or agent) can call TinyDecide as a
+tool. `--model`, `--max-tokens` and `--strict` still apply; the others are
+ignored.
+
+It exposes a single tool, **`decide`**, taking a message and a list of
+questions and returning the same JSON the CLI prints:
+
+```json
+{
+  "state": "Book a table on Friday at 7:30",
+  "questions": [
+    {"type": "noul", "text": "Is this urgent?"},
+    {"type": "choice", "text": "Which app?", "options": ["calendar", "restaurants"]},
+    {"type": "span", "text": "Extract the time."}
+  ]
+}
+```
+
+A typical client config points at the installed binary:
+
+```json
+{
+  "mcpServers": {
+    "tinydecide": { "command": "tinydecide", "args": ["--mcp"] }
+  }
+}
+```
+
+The server loads its model the same way as the one-shot CLI (the resolution
+order under "Finding the model"), so `make install` gives a self-contained
+server that needs no `--model`. To serve the full model from a `go install`ed
+binary, put the weights in `~/.tinydecide` or set `$TINYDECIDE_MODEL`.
+
+The tool returns its JSON both as text content and as `structuredContent`. An
+invalid request — an unknown question `type`, no questions, an empty `state`, or
+a `--strict` token overflow — comes back as a tool error (`isError: true`)
+rather than crashing the server, so the client can show the message and retry.
+
 ## Corrections
 
 Store `(Qvec, Z0)` under the option a person picked, then pass prototypes on
